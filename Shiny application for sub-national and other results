@@ -1,0 +1,1116 @@
+###########################################################################
+# STH MODELLING IN AFRICA SHINY APP CODE #
+# This script is for the server #
+# The server functions should be run after the UI script #
+# Last edited on 03 April 2023 #
+# Version April 2023 v1 #
+################################################################################
+
+#===============================================================================
+rm(list=ls())
+
+#===========================================================================
+#== DATA PROCESSING
+# JESSIE, Start with the observed prevalence first and see how it goes :)
+#https://community.rstudio.com/t/how-to-load-initial-data-before-clicking-on-leaflet-polygon/119058
+
+
+# #load/install libraries
+#devtools::install_github("r-spatial/mapview")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(leaflet)) install.packages("leaflet", repos = "http://cran.us.r-project.org")
+if(!require(shiny)) install.packages("shiny", repos = "http://cran.us.r-project.org")
+if(!require(shinyWidgets)) install.packages("shinyWidgets", repos = "http://cran.us.r-project.org")
+if(!require(shinydashboard)) install.packages("shinydashboard", repos = "http://cran.us.r-project.org")
+if(!require(shinythemes)) install.packages("shinythemes", repos = "http://cran.us.r-project.org")
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(viridis)) install.packages("viridis", repos = "http://cran.us.r-project.org")
+if(!require(sf)) install.packages("sf", repos = "http://cran.us.r-project.org")
+if(!require(DT)) install.packages("DT", repos = "http://cran.us.r-project.org")
+#for rendering the table
+
+#==============================================================================
+#read in the data
+mdata <- readRDS("mdata.rds")
+
+data.model.summ <- readRDS("data.model.summ.rds")
+
+data.pred.ASC_admin <- readRDS("data.pred.ASC_admin.rds")
+data.pred.HK_admin <- readRDS("data.pred.HK_admin.rds")
+data.pred.TT_admin <- readRDS("data.pred.TT_admin.rds")
+data.pred.STH_admin <- readRDS("data.pred.STH_admin.rds")
+
+nyear_data <- readRDS("nyear_data.rds")
+
+data.model.valid.LU <- readRDS("data.model.valid.LU.rds")
+data.model.valid.result <- readRDS("data.model.valid.result.rds")
+
+
+#==============================================================================
+#read in shapefile and assign projection
+afri_shp_adm2 <- st_read("afri_shp_adm2.shp")
+afri_shp_adm2 <- st_transform(afri_shp_adm2, 3857)
+afri_shp_adm2 <- st_transform(afri_shp_adm2, "+proj=longlat +datum=WGS84")
+
+#make sure no admin names are duplicated in shapefile
+afri_shp_adm2$adm2Name <- stringr::str_to_sentence(afri_shp_adm2$adm2Name)
+afri_shp_adm2$adm2Name2 <-  gsub("/", " or ", afri_shp_adm2$adm2Name)
+
+#===============================================================================
+#UI==================
+#==============================================================================
+
+ui <- fluidPage(
+  # theme = bslib::bs_theme(bootswatch = "flatly"),
+  navbarPage(theme = shinytheme("flatly"), collapsible = TRUE,
+             title="Current status of STH in 35 African countries", 
+             #tabsetPanel(
+             tabPanel("Home", 
+                      #INFORMATION ABOUT THE SITE
+                      # tags$br(),tags$br(),tags$h4("THIS SITE IS STILL UNDER CONSTRUCTION"), 
+                      tags$br(),tags$br(),tags$h4("Background and Abstract"), 
+                      "This R Shiny App is associated with the paper titled Mapping and Modelling
+             Soil-transmitted Helminths (STH) in sub-Saharan Africa.",
+                      tags$br(),tags$br(),tags$h4("Authors"),
+                      "Ms. Jessie Jane Khaki, Dr. Mark Minnery, and Dr. Emanuele Giorgi.",
+                      tags$br(), tags$br(), tags$h4("Code"),
+                      "The code for this project is available at ",
+                      tags$a(href = "https://github.com/jessiekhaki", "GitHub", target = "_blank"),
+                      "."
+             ),
+             
+             tabPanel("Data overview",
+                      sidebarLayout(
+                        sidebarPanel(
+                          span(tags$i(h4("This page shows the locations and crude 
+                                         prevalence (observed fraction of positive cases).")), style="color:#045a8d"),
+                          # span(tags$i(h6("Plots showing for data with no missing locations")), style="color:#045a8d"),
+                          span(tags$i(h5("The blue lines are boundaries
+                          of administrative level 2 geographical subnational units.")), style="color:#045a8d"),
+                          
+                          pickerInput(inputId = "Country", label = "Select country",   
+                                      choices = sort(unique(mdata$Country)), 
+                                      selected = c("Continent"),
+                                      multiple = FALSE),
+                          
+                          pickerInput(inputId = "Species", label = "Select Species",   
+                                      choices = c("Hookworm (Necator americanus, HK)"= "HK.prev", 
+                                                  "Roundworm (Ascaris lumbricoides, ASC)"= "ASC.prev", 
+                                                  "Whipworm (Trichuris trichiura, TT)" =  "TT.prev", 
+                                                  "Any STH" = "STH.prev"), 
+                                      selected = c("Any STH"),
+                                      multiple = FALSE),
+                          
+                          span(tags$i(h5("The year and sample size of the country are: ")), style="color:#045a8d"),
+                          h6(textOutput("reactive_year"), align = "left"),
+                          h6(textOutput("reactive_sample_size"), align = "left") 
+                          
+                        ),
+                        
+                        # Show a plot of the generated distribution
+                        mainPanel("Prevalence map", #plotOutput("CountryObPlot") 
+                                  # h2("Map"),
+                                  leafletOutput("map", height="80vh") )
+                        
+                      ), downloadButton( "downloadobmap", "Download" ) )    ,
+             
+             
+             tabPanel("Subnational predicted prevalence",
+                      sidebarLayout(
+                        sidebarPanel(
+                          span(tags$i(h4("This page displays predicted prevalences (%)
+                  and their corresponding 95% Confidence Intervals (CIs) at the 
+                  subnational level from the fitted geostatistical models.")), 
+                               #     span(tags$i(h5("The blue lines are boundaries
+                               #of administrative level 2 geographical subnational units.")), style="color:#045a8d"),
+                               
+                               style="color:#045a8d"),
+                          pickerInput(inputId = "CountryPredAdmin", label = "Select country",   
+                                      choices = sort(unique(mdata$Country)), 
+                                      selected = c("Continent"),
+                                      multiple = FALSE)
+                        ) ,
+                        # Show plots for the predicted prevalences
+                        mainPanel(
+                          tabsetPanel(
+                            tabPanel("Hookworm (Necator americanus, HK)", leafletOutput("admin.predicted.map.HK", height="80vh")),
+                            tabPanel("Roundworm (Ascaris lumbricoides, ASC)", leafletOutput("admin.predicted.map.ASC", height="80vh")),
+                            tabPanel("Whipworm (Trichuris trichiura, TT)", leafletOutput("admin.predicted.map.TT", height="80vh")),
+                            tabPanel("Any STH", leafletOutput("admin.predicted.map.STH", height="80vh"))
+                          )
+                        ) 
+                      )#close the sidebarlayout
+             ), #close the tabPanel
+             
+             
+             tabPanel("Subnational exceedance probability",
+                      sidebarLayout(
+                        sidebarPanel(
+                          span(tags$i(h4("This page illustrates the WHO STH threshold category plots
+                                         at the subnational level.")), style="color:#045a8d"),
+                          
+                          span(tags$i(h5("The exceedance probabilities for the 5 WHO STH 
+                                         thresholds (less than 2%, 2% to 10%, 10% to 20%, 20% to 50%, and 
+                                         greater than 50%) can be found by clicking on the area of interest on the map. 
+                                          ")), style="color:#045a8d"),
+                          
+                          span(tags$i(h5(" 
+                                         The legend and color on the maps show the predicted WHO endemicity class. 
+                                         This was estimated by allocating predictive areas to the class with the 
+                                         highest probability among the exceedance probabilities for the 5 
+                                         WHO classes mentioned above.")), style="color:#045a8d"),
+                          
+                          
+                          pickerInput(inputId = "CountryExceedAdmin", label = "Select country",   
+                                      choices = sort(unique(mdata$Country)), 
+                                      selected = c("Continent"),
+                                      multiple = FALSE)
+                        ) ,
+                        # Show a plot of the generated distribution
+                        mainPanel(
+                          tabsetPanel(
+                            tabPanel("Hookworm (Necator americanus, HK)", leafletOutput("admin.exceed.map.HK", height="80vh")),
+                            tabPanel("Roundworm (Ascaris lumbricoides, ASC)", leafletOutput("admin.exceed.map.ASC", height="80vh")),
+                            tabPanel("Whipworm (Trichuris trichiura, TT)", leafletOutput("admin.exceed.map.TT", height="80vh")),
+                            tabPanel("Any STH", leafletOutput("admin.exceed.map.STH", height="80vh"))
+                          )
+                        ) 
+                      )#close the sidebarlayout
+             ),
+             
+             tabPanel("Model Parameters",
+                      sidebarLayout(
+                        sidebarPanel(
+                          span(tags$i(h4("This page shows parameter estimates and 
+                              their 95% confidence intervals from 
+                                         geostatistical models.")), style="color:#045a8d"),
+                          
+                          pickerInput(inputId = "CountryModelPar", label = "Select country",   
+                                      choices = sort(unique(mdata$Country)), 
+                                      selected = c("Continent"),
+                                      multiple = FALSE),
+                          
+                          pickerInput(inputId = "SpeciesModelPar", label = "Select Species",   
+                                      choices = c("Hookworm (Necator americanus, HK)"= "HK", 
+                                                  "Roundworm (Ascaris lumbricoides, ASC)"= "ASC", 
+                                                  "Whipworm (Trichuris trichiura, TT)" =  "TT", 
+                                                  "Any STH" = "STH"), 
+                                      selected = c("Any STH"),
+                                      multiple = FALSE),
+                          
+                          span(tags$i(h5("Legend:")), style="color:#045a8d"),
+                          span(tags$i(h5("sigma^2 = variance of the Gaussian process")), style="color:#045a8d"),
+                          span(tags$i(h5("phi = scale of the spatial correlation (km)")), style="color:#045a8d"),
+                          span(tags$i(h5("tau^2 = variance of the nugget effect")), style="color:#045a8d")
+                        ) ,
+                        
+                        # Show the model coefficients and confidence intervals
+                        mainPanel("Parameter estimates and confidence intervals", 
+                                  # h2("Map"),
+                                  DT::dataTableOutput("table.model.parameters") 
+                        ) #close the main panel
+                      )#close the sidebarlayout
+             ), #close the tabPanel for model parameters
+             
+             tabPanel("Model validation",
+                      sidebarLayout(
+                        sidebarPanel(
+                          span(tags$i(h4("This page shows model validation plots")), style="color:#045a8d"),
+                          span(tags$i(h5("The model being assessed is a good fit if the 
+                                         nPIT curve (represented by the solid black line)
+                          falls within the 95% envelope (denoted by the dashed lines)
+                                      ")), style="color:#045a8d"),
+                          # span(tags$i(h5("A model is calibrated if the observed nPIT curves (represented by the solid black line) 
+                          #              from the three hold-out samples for all three species fall within 
+                          #              the 95% envelope (denoted by the dashed lines). ")), style="color:#045a8d"),
+                          
+                          pickerInput(inputId = "CountryModelValid", label = "Select country",   
+                                      choices = sort(unique(mdata$Country)), 
+                                      selected = c("Continent"),
+                                      multiple = FALSE),
+                          
+                          pickerInput(inputId = "SpeciesModelValid", label = "Select Species",   
+                                      choices = c("Hookworm (Necator americanus, HK)"= "HK", 
+                                                  "Roundworm (Ascaris lumbricoides, ASC)"= "ASC", 
+                                                  "Whipworm (Trichuris trichiura, TT)" =  "TT", 
+                                                  "Any STH" = "STH"), 
+                                      selected = c("Any STH"),
+                                      multiple = FALSE),
+                        ) ,
+                        
+                        # Show a plot of the generated distribution
+                        mainPanel(
+                          tabsetPanel(
+                            tabPanel("30% Sample size test-set", plotOutput("valid.map.30", height="80vh")),
+                            tabPanel("40% Sample size test-set", plotOutput("valid.map.40", height="80vh")),
+                            tabPanel("50% Sample size test-set", plotOutput("valid.map.50", height="80vh"))
+                          )
+                          
+                        ) 
+                      )#close the sidebarlayout
+             ) #close the tabPanel for model validation
+             # )
+  ) )
+
+#==============================================================================
+
+
+#=============================================================================
+#= SERVER FUNCTION
+#===============================================================================
+##idea:
+#write function for the maps to reduce the space for plotting in the server
+
+#map for observed data
+
+obs_fun <- function(obs_data, leaflet_map){
+  palette_WHO  <- colorBin( palette="plasma", domain=as.numeric( unlist(obs_data()$prevalence) ), 
+                            na.color="transparent", bins=c(0,2,10,20,50,100))
+  
+  palette_2  <- colorNumeric( palette="plasma", domain=as.numeric( unlist(obs_data()$prevalence) ), 
+                              na.color="transparent")
+  
+  
+  if( nrow(obs_data()) < 1) {
+    obs_map <- leaflet() %>%
+      addTiles() %>%
+      addMarkers(lng = 0.5, lat = 0, 
+                 label = "The selected country does not have species level data.",
+                 icon=list(iconSize=c(30,30)),
+                 labelOptions = labelOptions(
+                   noHide = TRUE,    # Keep the label always visible
+                   style = list("font-size" = "16px")  # Adjust the font size
+                 ) ) 
+  } else{
+    obs_map <- leaflet( obs_data() ) %>%
+      addTiles() %>%
+      addPolygons(data=leaflet_map(), smoothFactor = 0.2, fillColor = "lightyellow",
+                  weight = 2, fillOpacity = 1 )%>%
+      addCircleMarkers(group = 'WHO Categories', data=obs_data(),
+                       color = ~palette_WHO( obs_data()[,c("prevalence")] ),
+                       popup = ~as.character( round( obs_data()[,c("prevalence")]) ,1),
+                       label = ~as.character( round( obs_data()[,c("prevalence")]) ,1),
+                       # set the opacity of the circles,
+                       fillOpacity = 1,  stroke=FALSE,
+                       radius = 4 )%>% # set the radius of the circles
+      addCircleMarkers(group = 'Fit to range of predictions', data=obs_data(),
+                       color = ~palette_2( obs_data()[,c("prevalence")] ),
+                       popup = ~as.character( round( obs_data()[,c("prevalence")]) ,1),
+                       label = ~as.character( round( obs_data()[,c("prevalence")]) ,1),
+                       # set the opacity of the circles,
+                       fillOpacity = 1,  stroke=FALSE,
+                       radius = 4 )%>% # set the radius of the circles
+      addLegend( pal=palette_WHO, values= ~ obs_data()[,c("prevalence")] , 
+                 opacity=0.9, title = "Prevalence", position = "bottomright" )%>%
+      addLayersControl(
+        position = "topright",
+        baseGroups = c('WHO Categories','Fit to range of predictions'),
+        options = layersControlOptions(collapsed = FALSE)) %>%
+      hideGroup(c('WHO Categories','Fit to range of predictions')) %>%
+      showGroup('WHO Categories') %>%
+      addScaleBar(position = "bottomleft")
+  }
+  return(obs_map)
+}
+
+#==============================================================================
+#Create a vector of countries where at least one of the models was uncalibrated
+uncalib_models <- c("Angola", "Cote d'Ivoire", "Eritrea", "Gabon",
+                    "Liberia", "Nigeria", "Senegal", "South Sudan", "Swaziland",
+                    "Tanzania (Mainland)")
+
+
+#===============================================================================
+#mapping function for predicted prevalence at pixel level
+
+
+
+#=============================================================================
+#predicted prevalence at the subnational/regional/admin level function
+
+admin.pred.map.fun <- function(data.pred.admin, shape.pred){
+  
+  palette.pred_WHO  <- colorBin( palette="plasma", domain=as.numeric( unlist(shape.pred()$prev_admin) ), 
+                                 na.color="transparent", bins=c(0,2,10,20,50,100))
+  
+  palette.pred_2  <- colorNumeric( palette="plasma", domain=as.numeric( unlist(shape.pred()$prev_admin) ), 
+                                   na.color="transparent")
+  
+  labels <- sprintf("<strong> %s </strong> <br/>
+                  %s <br/>
+                  %g (%s)  ",
+                    shape.pred()$adm2Name, 
+                    "Prevalence (95% CI):",
+                    shape.pred()$prev_admin, 
+                    apply(as.matrix(data.pred.admin()[, 
+                              c("quantile2.5_admin", "quantile97.5_admin")]) , 1, toString)
+  ) %>% lapply(htmltools::HTML)
+  
+  if ( nrow(data.pred.admin()) < 1) {
+    map.pred.admin <- leaflet() %>%
+      addTiles() %>%
+      addMarkers(lng = 0.5, lat = 0, 
+                 label = "The selected country does not have species level data.",
+                 icon=list(iconSize=c(30,30)),
+                 labelOptions = labelOptions(
+                   noHide = TRUE,    # Keep the label always visible
+                   style = list("font-size" = "16px")  # Adjust the font size
+                 ) ) 
+    
+  } else if ( unique(data.pred.admin()$country) %in% uncalib_models ) {
+    map.pred.admin <- leaflet() %>%
+      addTiles() %>%
+      addMarkers(lng = 0.5, lat = 0, 
+                 label = "At least one of the models for the selected country was uncalibrated.",
+                 icon=list(iconSize=c(30,30)),
+                 labelOptions = labelOptions(
+                   noHide = TRUE,    # Keep the label always visible
+                   style = list("font-size" = "16px")  # Adjust the font size
+                 ) ) 
+    
+  } else {
+    
+    map.pred.admin <- leaflet(shape.pred()) %>% addTiles() %>%
+      addPolygons(
+        group = 'WHO Categories',
+        color = "grey", weight = 1,
+        fillColor = ~ palette.pred_WHO(as.numeric( (shape.pred()$prev_admin) ) ), fillOpacity = 1,
+        highlightOptions = highlightOptions(weight = 4),
+        label = labels,
+        labelOptions = labelOptions(
+          style = list(
+            "font-weight" = "normal",
+            padding = "3px 8px"
+          ),
+          textsize = "15px", direction = "auto"
+        )  ) %>%
+      addPolygons(
+        group = 'Fit to range of predictions',
+        color = "grey", weight = 1,
+        fillColor = ~ palette.pred_2(as.numeric( (shape.pred()$prev_admin) ) ), fillOpacity = 1,
+        highlightOptions = highlightOptions(weight = 4),
+        label = labels,
+        labelOptions = labelOptions(
+          style = list(
+            "font-weight" = "normal",
+            padding = "3px 8px"
+          ),
+          textsize = "15px", direction = "auto"
+        )  ) %>%
+      addLayersControl(
+        position = "topright",
+        baseGroups = c('WHO Categories','Fit to range of predictions'),
+        options = layersControlOptions(collapsed = FALSE)) %>%
+      addLegend(
+        pal = palette.pred_WHO, values = ~as.numeric( unlist(shape.pred()$prev_admin) ), opacity = 0.5,
+        title = "Predicted prevalence", position = "bottomright"
+      )%>%
+      hideGroup(c('WHO Categories','Fit to range of predictions')) %>%
+      showGroup('WHO Categories') %>%
+      addScaleBar(position = "bottomleft") 
+    
+  } 
+  
+  return(map.pred.admin)
+  
+}
+
+
+#==============================================================================
+# Exceedance probability maps
+#predefine the palette for exceedance probability maps
+# Extract unique categories
+exceed_categories <- sort(unique(data.pred.ASC_admin$category_admin))
+
+# Create a color palette with the number of colors based on the unique categories
+color_palette_exceed <- c("#414487", "#2a788e", "#22a884", "#7ad151", "#fde725")
+
+# Create a color factor using colorFactor
+palette.exceed <- leaflet::colorFactor(
+  palette = color_palette_exceed,
+  levels = exceed_categories,
+  domain = exceed_categories
+)
+
+
+
+#==============================================================================
+
+#------------------------------------------------------------------------------
+#-subnational level exceedance probability maps
+exceed.map.fun.admin <- function(data.exceed.admin, shape.exceed){
+  
+  labels <- sprintf("<strong> %s </strong> <br/>
+                  %s 
+                                 <br/> 0-2%%: %g
+                                 <br/> 2-10%%: %g 
+                                 <br/> 10-20%%: %g
+                                 <br/> 20-50%%: %g
+                                 <br/> >50%%: %g", 
+                    shape.exceed()$adm2Name,
+                    "Exceedance probability:",
+                    round(data.exceed.admin()$exceed_2, 3), 
+                    round(data.exceed.admin()$exceed2_10, 3), 
+                    round(data.exceed.admin()$exceed10_20, 3), 
+                    round(data.exceed.admin()$exceed20_50, 3), 
+                    round(data.exceed.admin()$exceed_50, 3) ) %>% 
+    lapply(htmltools::HTML)
+  
+  if(nrow(data.exceed.admin()) < 1){
+    
+    map.exceed.admin <- leaflet() %>%
+      addTiles() %>%
+      addMarkers(lng = 0.5, lat = 0, 
+                 label = "The selected country does not have species level data.",
+                 icon=list(iconSize=c(30,30)),
+                 labelOptions = labelOptions(
+                   noHide = TRUE,    # Keep the label always visible
+                   style = list("font-size" = "16px")  # Adjust the font size
+                 ) )
+    
+  } else if ( unique(data.exceed.admin()$country) %in% uncalib_models ) {
+    map.exceed.admin <- leaflet() %>%
+      addTiles() %>%
+      addMarkers(lng = 0.5, lat = 0, 
+                 label = "At least one of the models for the selected country was uncalibrated.",
+                 icon=list(iconSize=c(30,30)),
+                 labelOptions = labelOptions(
+                   noHide = TRUE,    # Keep the label always visible
+                   style = list("font-size" = "16px")  # Adjust the font size
+                 ) ) 
+    
+   } else {
+    map.exceed.admin <- leaflet( shape.exceed() ) %>% addTiles() %>%
+      addPolygons(
+        color = "grey", weight = 1,
+        fillColor = ~ palette.exceed( (shape.exceed()$category_admin) ) , fillOpacity = 1,
+        highlightOptions = highlightOptions(weight = 4),
+        label = labels,
+        labelOptions = labelOptions( style = list(
+          "font-weight" = "normal", padding = "3px 8px" ),
+          textsize = "15px", direction = "auto" )  ) %>%
+      addLegend(
+        pal = palette.exceed, values = ~ ( data.exceed.admin()$category_admin) , opacity = 0.5,
+        title = "WHO threshold", position = "bottomright"
+      )%>%
+      addScaleBar(position = "bottomleft") 
+    
+   }
+  
+  return(map.exceed.admin)
+    
+}
+
+
+#==============================================================================
+#Model validation plots function
+model_valid_fun <- function(LU_data, result_data){
+  if(nrow(LU_data()) < 1){
+    #Show message if selected country doesn't have species level data
+    model_valid_plot <- ggplot() +
+      theme_void() +
+      annotate("text", x = 0, y = 0, 
+               label = "The selected country does not have species level data.", 
+               color = "black", size = 7)
+    
+  } else {
+    
+    model_valid_plot <- graphics::matplot(result_data()$u, 
+                            cbind(result_data()$obs,LU_data()[,c("x2.50.", "x97.50.")] ),
+                            type="l",
+                            lty=c("solid","dashed","dashed"),
+                            col=1,lwd=2,xlab="u",ylab="nPIT(u)" ) 
+    
+  }
+  
+  return(model_valid_plot)
+}
+
+
+################################################################################
+
+#=========================================SERVER================================
+
+server <- function(input, output, session) {
+  
+  ##############################################################################
+  
+  #=============================================================================
+  #process year and sample size for Observed data tab
+  # Update the selected year and sample size based on the selected country
+  filtered_data_nyear <- reactive({
+    nyear_data %>% filter(Country %in% input$Country ) })
+  
+  output$reactive_year <- renderText({
+    paste0("Year: ", filtered_data_nyear()$Year)
+  })
+  
+  output$reactive_sample_size <- renderText({
+    paste0( "Sample: ", prettyNum(filtered_data_nyear()$sampleSize, big.mark=","))
+  })
+  
+  #=============================================================================
+  #process data for the observed plot
+  filtered_data <- reactive({
+    mdata %>% filter(Country %in% input$Country,Species %in% input$Species ) })
+  
+  leaflet_map <- reactive(afri_shp_adm2[afri_shp_adm2$ISO_3 %in% filtered_data()$ISO3, ])
+  
+  #how to save the map to user's computer
+  # https://stackoverflow.com/questions/44259716/how-to-save-a-leaflet-map-in-shiny
+  
+  map <- reactiveValues(dat = 0) 
+  #library(mapview) m <- leaflet() %>% addTiles() mapshot(m, file = "map.png")
+  
+  output$map <- renderLeaflet({
+    map$dat <- obs_fun(filtered_data, leaflet_map)
+  })
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "map.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    
+    content = function(file) {
+      mapshot(map$dat, file = file) #TAKES CLOSE TO 40 SECONDS TO PROCESS
+    } ) #
+  
+  #-----------------------------------------------------------
+  ## update legend of data overview maps when the selected layer group changes
+  observeEvent(input$map_groups, {
+    map <- leafletProxy("map") %>% clearControls()
+    
+    if (input$map_groups == 'WHO Categories'){
+      map_map <- map %>%
+        addLegend(
+          pal = colorBin( palette="plasma", domain=as.numeric( unlist(filtered_data()$prevalence) ), 
+                          na.color="transparent", bins=c(0,2,10,20,50,100)), 
+          values = as.numeric( unlist(filtered_data()$prevalence) ), opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }else{
+      map <- map %>%
+        addLegend(
+          pal = colorNumeric( palette="plasma", domain=as.numeric( unlist(filtered_data()$prevalence) ), 
+                              na.color="transparent"),
+          values = as.numeric( unlist(filtered_data()$prevalence) ),
+          opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }
+  })
+  
+  #############################################################################
+  #code for the predicted prevalence map at pixel level
+  #process data for the predicted prevalence plots
+  
+ 
+  
+  #==============================================================================
+  #---------------------------------------------------------
+  
+  ##############################################################################
+  #code for the predicted prevalence map at admin level
+  #We are getting there, Jessie :)
+  #------------------------------------------------
+  ##Hookworm
+  filtered_data_pred_admin_HK <- reactive({#input names MUST vary, otherwise ERROR
+    data.pred.HK_admin %>% filter(country %in% input$CountryPredAdmin ) })
+  
+  #predicted prevalence leaflet map
+  leaflet_map_pred_admin_HK <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_pred_admin_HK()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_pred_admin_HK <- reactive({
+    map_data <- merge(leaflet_map_pred_admin_HK(), filtered_data_pred_admin_HK(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_pred_admin_HK2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_pred_admin_HK(),
+                                                        map_pred_admin_HK()) ) #remove rows not matched
+    
+    return(matched_data)
+  })
+  
+  admin.predicted.map.HK <- reactiveValues(dat.pred.admin.HK = 0) 
+  
+  output$admin.predicted.map.HK <- renderLeaflet({
+    admin.pred.map.fun(data.pred.admin = filtered_data_pred_admin_HK2,
+                       shape.pred = map_pred_admin_HK ) } )
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.predicted.map.HK.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) { mapshot(admin.predicted.map.HK$dat.pred.admin.HK, file = file)    } ) #
+  
+  #---------------------------------------------------------------------------
+  ## update legend of predicted prevalence maps when the selected layer group changes
+  observeEvent(input$admin.predicted.map.HK_groups, {
+    admin_predicted_HK_map <- leafletProxy("admin.predicted.map.HK") %>% clearControls()
+    
+    if (input$admin.predicted.map.HK_groups == 'WHO Categories'){
+      admin_predicted_HK_map <- admin_predicted_HK_map %>%
+        addLegend(
+          pal = colorBin( palette="plasma", domain=as.numeric( unlist(map_pred_admin_HK()$prev_admin) ), 
+                          na.color="transparent", bins=c(0,2,10,20,50,100)), 
+          values = as.numeric( unlist(map_pred_admin_HK()$prev_admin) ), opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }else{
+      admin_predicted_HK_map <- admin_predicted_HK_map %>%
+        addLegend(
+          pal = colorNumeric( palette="plasma", domain=as.numeric( unlist(map_pred_admin_HK()$prev_admin) ), 
+                              na.color="transparent"),
+          values = as.numeric( unlist(map_pred_admin_HK()$prev_admin) ),
+          opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }
+  })
+  
+  
+  #============================================================================
+  ##Ascarius L
+  filtered_data_pred_admin_ASC <- reactive({#input names MUST vary, otherwise ERROR
+    data.pred.ASC_admin %>% filter(country %in% input$CountryPredAdmin ) })
+  
+  #predicted prevalence leaflet map
+  leaflet_map_pred_admin_ASC <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_pred_admin_ASC()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_pred_admin_ASC <- reactive({
+    map_data <- merge(leaflet_map_pred_admin_ASC(), filtered_data_pred_admin_ASC(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_pred_admin_ASC2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_pred_admin_ASC(),
+                            map_pred_admin_ASC()) ) #remove rows not matched
+    
+    return(matched_data)
+  })  
+  
+  admin.predicted.map.ASC <- reactiveValues(dat.pred.admin.ASC = 0) 
+  
+  output$admin.predicted.map.ASC <- renderLeaflet({
+    admin.pred.map.fun(data.pred.admin=filtered_data_pred_admin_ASC2, shape.pred = map_pred_admin_ASC) } )
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.predicted.map.ASC.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) { mapshot(admin.predicted.map.ASC$dat.pred.admin.ASC, file = file)    } ) #
+  
+  #---------------------------------------
+  #ASC
+  observeEvent(input$admin.predicted.map.ASC_groups, {
+    admin_predicted_ASC_map <- leafletProxy("admin.predicted.map.ASC") %>% clearControls()
+    
+    if (input$admin.predicted.map.ASC_groups == 'WHO Categories'){
+      admin_predicted_ASC_map <- admin_predicted_ASC_map %>%
+        addLegend(
+          pal = colorBin( palette="plasma", domain=as.numeric( unlist(map_pred_admin_ASC()$prev_admin) ), 
+                          na.color="transparent", bins=c(0,2,10,20,50,100)), 
+          values = as.numeric( unlist(map_pred_admin_ASC()$prev_admin) ), opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }else{
+      admin_predicted_ASC_map <- admin_predicted_ASC_map %>%
+        addLegend(
+          pal = colorNumeric( palette="plasma", domain=as.numeric( unlist(map_pred_admin_ASC()$prev_admin) ), 
+                              na.color="transparent"),
+          values = as.numeric( unlist(map_pred_admin_ASC()$prev_admin) ),
+          opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }
+  })
+  
+  #=============================================================================
+  ##TT
+  filtered_data_pred_admin_TT <- reactive({#input names MUST vary, otherwise ERROR
+    data.pred.TT_admin %>% filter(country %in% input$CountryPredAdmin ) })
+  
+  leaflet_map_pred_admin_TT <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_pred_admin_TT()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_pred_admin_TT <- reactive({
+    map_data <- merge(leaflet_map_pred_admin_TT(), filtered_data_pred_admin_TT(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_pred_admin_TT2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_pred_admin_TT(),
+                                                        map_pred_admin_TT()) ) #remove rows not matched
+    
+    return(matched_data)
+  })   
+  
+  admin.predicted.map.TT <- reactiveValues(dat.pred.admin.TT = 0) 
+  
+  output$admin.predicted.map.TT <- renderLeaflet({
+    admin.pred.map.fun(data.pred.admin=filtered_data_pred_admin_TT2, shape.pred = map_pred_admin_TT) } )
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.predicted.map.TT.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) { mapshot(admin.predicted.map.TT$dat.pred.admin.TT, file = file)    } ) #
+  
+  #-------------------------------------------
+  #TT - admin prev
+  observeEvent(input$admin.predicted.map.TT_groups, {
+    admin_predicted_TT_map <- leafletProxy("admin.predicted.map.TT") %>% clearControls()
+    
+    if (input$admin.predicted.map.TT_groups == 'WHO Categories'){
+      admin_predicted_TT_map <- admin_predicted_TT_map %>%
+        addLegend(
+          pal = colorBin( palette="plasma", domain=as.numeric( unlist(map_pred_admin_TT()$prev_admin) ), 
+                          na.color="transparent", bins=c(0,2,10,20,50,100)), 
+          values = as.numeric( unlist(map_pred_admin_TT()$prev_admin) ), opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }else{
+      admin_predicted_TT_map <- admin_predicted_TT_map %>%
+        addLegend(
+          pal = colorNumeric( palette="plasma", domain=as.numeric( unlist(map_pred_admin_TT()$prev_admin) ), 
+                              na.color="transparent"),
+          values = as.numeric( unlist(map_pred_admin_TT()$prev_admin) ),
+          opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }
+  })
+  
+  
+  #==========================================================================
+  ##Any STH
+  filtered_data_pred_admin_STH <- reactive({#input names MUST vary, otherwise ERROR
+    data.pred.STH_admin %>% filter(country %in% input$CountryPredAdmin ) })
+  
+  leaflet_map_pred_admin_STH <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_pred_admin_STH()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_pred_admin_STH <- reactive({
+    map_data <- merge(leaflet_map_pred_admin_STH(), filtered_data_pred_admin_STH(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_pred_admin_STH2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_pred_admin_STH(),
+                      map_pred_admin_STH()) ) #remove rows not matched
+    
+    return(matched_data)
+  })  
+  
+  admin.predicted.map.STH <- reactiveValues(dat.pred.admin.STH = 0) 
+  
+  output$admin.predicted.map.STH <- renderLeaflet({
+    admin.pred.map.fun(data.pred.admin=filtered_data_pred_admin_STH2, 
+                       shape.pred = map_pred_admin_STH) } )
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.predicted.map.STH.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) { mapshot(admin.predicted.map.STH$dat.pred.admin.STH, file = file)    } ) # 
+  
+  #Any STH admin prev
+  
+  observeEvent(input$admin.predicted.map.STH_groups, {
+    admin_predicted_STH_map <- leafletProxy("admin.predicted.map.STH") %>% clearControls()
+    
+    if (input$admin.predicted.map.STH_groups == 'WHO Categories'){
+      admin_predicted_STH_map <- admin_predicted_STH_map %>%
+        addLegend(
+          pal = colorBin( palette="plasma", domain=as.numeric( unlist(map_pred_admin_STH()$prev_admin) ), 
+                          na.color="transparent", bins=c(0,2,10,20,50,100)), 
+          values = as.numeric( unlist(map_pred_admin_STH()$prev_admin) ), opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }else{
+      admin_predicted_STH_map <- admin_predicted_STH_map %>%
+        addLegend(
+          pal = colorNumeric( palette="plasma", domain=as.numeric( unlist(map_pred_admin_STH()$prev_admin) ), 
+                              na.color="transparent"),
+          values = as.numeric( unlist(map_pred_admin_STH()$prev_admin) ),
+          opacity = 0.5,
+          title = "Predicted prevalence", position = "bottomright"
+        )
+    }
+  })
+  
+  #----------------------------------------------------------------------------
+  
+  ##############################################################################
+  #don't give up, you can do this! :)
+  #process data for the exceedance probability plots
+  ##Hookworm
+  
+  
+  ##############################################################################
+  #Exceedance probabilities at subnational level
+  #We are nearly there! :) lol
+  #HK
+  filtered_data_exceed_admin_HK <- reactive({
+    data.pred.HK_admin %>% filter(country %in% input$CountryExceedAdmin ) })
+  
+  leaflet_map_exceed_admin_HK <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_exceed_admin_HK()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_exceed_admin_HK <- reactive({
+    map_data <- merge(leaflet_map_exceed_admin_HK(), filtered_data_exceed_admin_HK(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_exceed_admin_HK2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_exceed_admin_HK(),
+                                              map_exceed_admin_HK()) ) #remove rows not matched
+    
+    return(matched_data)
+  }) 
+  
+  admin.exceed.map.HK <- reactiveValues(dat.exceed.admin.HK = 0) 
+  
+  output$admin.exceed.map.HK <- renderLeaflet({
+    exceed.map.fun.admin(data.exceed = filtered_data_exceed_admin_HK2, 
+                         shape.exceed = map_exceed_admin_HK)    })
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.exceed.map.HK.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) {mapshot(admin.exceed.map.HK$dat.exceed.admin.HK, file = file)  } 
+  )
+  
+  #--------------------------------------------ASC
+  filtered_data_exceed_admin_ASC <- reactive({
+    data.pred.ASC_admin %>% filter(country %in% input$CountryExceedAdmin ) })
+  
+  leaflet_map_exceed_admin_ASC <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_exceed_admin_ASC()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_exceed_admin_ASC <- reactive({
+    map_data <- merge(leaflet_map_exceed_admin_ASC(), filtered_data_exceed_admin_ASC(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_exceed_admin_ASC2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_exceed_admin_ASC(),
+                                                        map_exceed_admin_ASC()) ) #remove rows not matched
+    
+    return(matched_data)
+  }) 
+  
+  admin.exceed.map.ASC <- reactiveValues(dat.exceed.admin.ASC = 0) 
+  
+  output$admin.exceed.map.ASC <- renderLeaflet({
+    exceed.map.fun.admin(data.exceed = filtered_data_exceed_admin_ASC2, 
+                         shape.exceed = map_exceed_admin_ASC)    })
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.exceed.map.ASC.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) {mapshot(admin.exceed.map.ASC$dat.exceed.admin.ASC, file = file)  } 
+  )
+  
+  #---------------------------------------------------TT
+  filtered_data_exceed_admin_TT <- reactive({
+    data.pred.TT_admin %>% filter(country %in% input$CountryExceedAdmin ) })
+  
+  leaflet_map_exceed_admin_TT <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_exceed_admin_TT()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_exceed_admin_TT <- reactive({
+    map_data <- merge(leaflet_map_exceed_admin_TT(), filtered_data_exceed_admin_TT(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_exceed_admin_TT2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_exceed_admin_TT(),
+                                          map_exceed_admin_TT()) ) #remove rows not matched
+    
+    return(matched_data)
+  }) 
+  
+  admin.exceed.map.TT <- reactiveValues(dat.exceed.admin.TT = 0) 
+  
+  output$admin.exceed.map.TT <- renderLeaflet({
+    exceed.map.fun.admin(data.exceed = filtered_data_exceed_admin_TT2, 
+                         shape.exceed = map_exceed_admin_TT)    })
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.exceed.map.TT.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) {mapshot(admin.exceed.map.TT$dat.exceed.admin.TT, file = file)  } 
+  )
+  
+  #------------------------------------------------------STH
+  filtered_data_exceed_admin_STH <- reactive({
+    data.pred.STH_admin %>% filter(country %in% input$CountryExceedAdmin ) })
+  
+  leaflet_map_exceed_admin_STH <- reactive({
+    map <- afri_shp_adm2[afri_shp_adm2$ISO_3 %in% 
+                           toupper( filtered_data_exceed_admin_STH()$iso2), ] 
+    
+    map2 <- map %>% st_as_sf() %>% group_by(adm2Name) %>% filter(row_number() == 1)
+    
+    return(map2)
+    
+  }) #capitalise the iso2 in the filtered data
+  
+  map_exceed_admin_STH <- reactive({
+    map_data <- merge(leaflet_map_exceed_admin_STH(), filtered_data_exceed_admin_STH(), 
+                      by.x="adm2Name2", by.y="adm2_name")
+    
+    return(map_data)
+  })
+  
+  filtered_data_exceed_admin_STH2 <- reactive({
+    matched_data <-  suppressMessages( dplyr::semi_join(filtered_data_exceed_admin_STH(),
+                                                        map_exceed_admin_STH()) ) #remove rows not matched
+    
+    return(matched_data)
+  }) 
+  
+  admin.exceed.map.STH <- reactiveValues(dat.exceed.admin.STH = 0) 
+  
+  output$admin.exceed.map.STH <- renderLeaflet({
+    exceed.map.fun.admin(data.exceed = filtered_data_exceed_admin_STH2, 
+                         shape.exceed = map_exceed_admin_STH)    })
+  
+  output$downloadobmap <- downloadHandler(
+    filename = "admin.exceed.map.STH.png", #WHY IS IT NOT PICKING THE FILE NAME??
+    content = function(file) {mapshot(admin.exceed.map.STH$dat.exceed.admin.STH, file = file)  } 
+  ) #
+  
+  
+  ##############################################################################
+  #Model parameters tab
+  filtered_data_model_par <- reactive({
+    model_dat <- data.model.summ %>% filter( (country) %in% input$CountryModelPar,
+                                (species) %in% input$SpeciesModelPar)
+    
+    model_dat <- model_dat[,c(4:6)]
+    names(model_dat) <- c("Variable", "Estimate", "95% Confidence interval")
+    
+    return(model_dat)
+    
+    })
+  
+  output$table.model.parameters <- renderDataTable({
+    if (nrow(filtered_data_model_par()) >0) {
+      filtered_data_model_par()
+    } 
+    filtered_data_model_par()
+  }, options = 
+    list(searching = FALSE,paging = FALSE,
+         language = list(
+           zeroRecords = "A model was not fit for the selected country and species.") )
+  )
+  
+  ##############################################################################
+  #Model validation plots
+  type.class <- c(30,40,50) #for choosing the category/type of plot
+  filtered_data_model_valid_LU_30 <- reactive({
+    data.model.valid.LU %>% filter( (country) %in% input$CountryModelValid,
+                                 (species) %in% input$SpeciesModelValid,
+                                 (type) %in% type.class[1] ) })
+  
+  filtered_data_model_valid_LU_40 <- reactive({
+    data.model.valid.LU %>% filter( (country) %in% input$CountryModelValid,
+                                 (species) %in% input$SpeciesModelValid,
+                               (type) %in% type.class[2] ) })
+  
+  filtered_data_model_valid_LU_50 <- reactive({
+    data.model.valid.LU %>% filter( (country) %in% input$CountryModelValid,
+                                 (species) %in% input$SpeciesModelValid,
+                                 (type) %in% type.class[3] ) })
+  #----------------------------
+  filtered_data_model_valid_result_30 <- reactive({
+    data.model.valid.result %>% filter( (country) %in% input$CountryModelValid,
+                                 (species) %in% input$SpeciesModelValid,
+                                 (type) %in% type.class[1]  ) })
+  
+  filtered_data_model_valid_result_40 <- reactive({
+    data.model.valid.result %>% filter( (country) %in% input$CountryModelValid,
+                                 (species) %in% input$SpeciesModelValid, 
+                                 (type) %in% type.class[2]) })
+  
+  filtered_data_model_valid_result_50 <- reactive({
+    data.model.valid.result %>% filter( (country) %in% input$CountryModelValid,
+                                 (species) %in% input$SpeciesModelValid,
+                                 (type) %in% type.class[3] ) })
+  #-----------------------------------------
+  
+  output$valid.map.30 <- renderPlot({
+    model_valid_fun(LU_data = filtered_data_model_valid_LU_30,
+                    result_data = filtered_data_model_valid_result_30) 
+  })
+  
+  output$valid.map.40 <- renderPlot({
+    model_valid_fun(LU_data = filtered_data_model_valid_LU_40,
+                    result_data = filtered_data_model_valid_result_40) 
+  })
+  
+  output$valid.map.50 <- renderPlot({
+    model_valid_fun(LU_data = filtered_data_model_valid_LU_50,
+                    result_data = filtered_data_model_valid_result_50) 
+  })
+  
+  ############################################################################
+}
+
+shinyApp(ui, server)
+
